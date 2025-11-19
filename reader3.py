@@ -64,7 +64,9 @@ class Book:
     # Meta info
     source_file: str
     processed_at: str
-    version: str = "3.0"
+    anchor_map: Dict[str, int] = field(default_factory=dict)
+    split_level: int = 1
+    version: str = "3.1"
 
 
 # --- Utilities ---
@@ -91,6 +93,27 @@ def extract_plain_text(soup: BeautifulSoup) -> str:
     text = soup.get_text(separator=' ')
     # Collapse whitespace
     return ' '.join(text.split())
+
+
+def register_anchors_from_soup(soup: BeautifulSoup, file_name: str, order: int, anchor_map: Dict[str, int]):
+    """Register anchors for both full path and basename variants.
+
+    Some EPUB TOC hrefs use shortened paths (e.g. "Text/ch01.xhtml#foo") while
+    spine item names may include a longer prefix (e.g. "OEBPS/Text/ch01.xhtml").
+    To make lookups robust we register both variants.
+    """
+    basename = os.path.basename(file_name)
+
+    for el in soup.find_all(attrs={"id": True}):
+        anchor_id = el.get("id")
+        if not anchor_id:
+            continue
+        full_key = f"{file_name}#{anchor_id}"
+        base_key = f"{basename}#{anchor_id}"
+        if full_key not in anchor_map:
+            anchor_map[full_key] = order
+        if base_key not in anchor_map:
+            anchor_map[base_key] = order
 
 
 def parse_toc_recursive(toc_list, depth=0) -> List[TOCEntry]:
@@ -181,6 +204,16 @@ def process_epub(epub_path: str, output_dir: str) -> Book:
     # 2. Extract Metadata
     metadata = extract_metadata_robust(book)
 
+    # Determine heading split level (1-6) for logical chapter splitting
+    try:
+        split_level = int(os.getenv("READER3_SPLIT_HEADING_LEVEL", "2"))
+    except ValueError:
+        split_level = 2
+    if split_level < 1:
+        split_level = 1
+    elif split_level > 6:
+        split_level = 6
+
     # 3. Prepare Output Directories
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
@@ -219,8 +252,10 @@ def process_epub(epub_path: str, output_dir: str) -> Book:
     # 6. Process Content (Spine-based to preserve HTML validity)
     print("Processing chapters...")
     spine_chapters = []
+    anchor_map: Dict[str, int] = {}
 
     # We iterate over the spine (linear reading order)
+    order_counter = 0
     for i, spine_item in enumerate(book.spine):
         item_id, linear = spine_item
         item = book.get_item_with_id(item_id)
@@ -236,7 +271,8 @@ def process_epub(epub_path: str, output_dir: str) -> Book:
             # A. Fix Images
             for img in soup.find_all('img'):
                 src = img.get('src', '')
-                if not src: continue
+                if not src:
+                    continue
 
                 # Decode URL (part01/image%201.jpg -> part01/image 1.jpg)
                 src_decoded = unquote(src)
@@ -253,22 +289,70 @@ def process_epub(epub_path: str, output_dir: str) -> Book:
 
             # C. Extract Body Content only
             body = soup.find('body')
-            if body:
-                # Extract inner HTML of body
-                final_html = "".join([str(x) for x in body.contents])
-            else:
-                final_html = str(soup)
+            content_root = body if body else soup
 
-            # D. Create Object
-            chapter = ChapterContent(
-                id=item_id,
-                href=item.get_name(), # Important: This links TOC to Content
-                title=f"Section {i+1}", # Fallback, real titles come from TOC
-                content=final_html,
-                text=extract_plain_text(soup),
-                order=i
-            )
-            spine_chapters.append(chapter)
+            heading_tags = {f"h{lvl}" for lvl in range(1, split_level + 1)}
+            segments = []
+            current_nodes = []
+            current_title = None
+
+            for child in content_root.children:
+                tag_name = getattr(child, "name", None)
+                if tag_name and tag_name.lower() in heading_tags:
+                    if current_nodes:
+                        segments.append((current_title, list(current_nodes)))
+                        current_nodes = []
+                    current_title = child.get_text(separator=" ", strip=True) or None
+                    current_nodes.append(child)
+                else:
+                    current_nodes.append(child)
+
+            if current_nodes:
+                segments.append((current_title, list(current_nodes)))
+
+            if not segments or len(segments) == 1:
+                final_html = "".join([str(x) for x in content_root.contents])
+                section_soup = BeautifulSoup(final_html, 'html.parser')
+                chapter = ChapterContent(
+                    id=item_id,
+                    href=item.get_name(), # Important: This links TOC to Content
+                    title=f"Section {order_counter+1}", # Fallback, real titles come from TOC
+                    content=final_html,
+                    text=extract_plain_text(section_soup),
+                    order=order_counter
+                )
+                spine_chapters.append(chapter)
+                register_anchors_from_soup(section_soup, item.get_name(), order_counter, anchor_map)
+                # Map both full path and basename for file-level lookup
+                fname = item.get_name()
+                base = os.path.basename(fname)
+                if fname not in anchor_map:
+                    anchor_map[fname] = order_counter
+                if base not in anchor_map:
+                    anchor_map[base] = order_counter
+                order_counter += 1
+            else:
+                for seg_idx, (seg_title, nodes) in enumerate(segments):
+                    final_html = "".join([str(x) for x in nodes])
+                    section_soup = BeautifulSoup(final_html, 'html.parser')
+                    chapter = ChapterContent(
+                        id=f"{item_id}_{seg_idx}",
+                        href=item.get_name(), # Important: This links TOC to Content
+                        title=seg_title or f"Section {order_counter+1}", # Fallback, real titles come from TOC
+                        content=final_html,
+                        text=extract_plain_text(section_soup),
+                        order=order_counter
+                    )
+                    spine_chapters.append(chapter)
+                    register_anchors_from_soup(section_soup, item.get_name(), order_counter, anchor_map)
+                    if seg_idx == 0:
+                        fname = item.get_name()
+                        base = os.path.basename(fname)
+                        if fname not in anchor_map:
+                            anchor_map[fname] = order_counter
+                        if base not in anchor_map:
+                            anchor_map[base] = order_counter
+                    order_counter += 1
 
     # 7. Final Assembly
     final_book = Book(
@@ -277,7 +361,9 @@ def process_epub(epub_path: str, output_dir: str) -> Book:
         toc=toc_structure,
         images=image_map,
         source_file=os.path.basename(epub_path),
-        processed_at=datetime.now().isoformat()
+        processed_at=datetime.now().isoformat(),
+        anchor_map=anchor_map,
+        split_level=split_level,
     )
 
     return final_book

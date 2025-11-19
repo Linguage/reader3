@@ -1,28 +1,42 @@
 import os
 import pickle
+import shutil
 from functools import lru_cache
 from typing import Optional
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
 
-from reader3 import Book, BookMetadata, ChapterContent, TOCEntry
+from reader3 import Book, BookMetadata, ChapterContent, TOCEntry, process_epub, save_to_pickle
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 templates = Jinja2Templates(directory="templates")
 
 # Where are the book folders located?
-BOOKS_DIR = "."
+# Original EPUBs live in books/hub, processed *_data folders in books/shelf.
+BASE_BOOKS_DIR = "books"
+BOOKS_HUB_DIR = os.path.join(BASE_BOOKS_DIR, "hub")
+BOOKS_SHELF_DIR = os.path.join(BASE_BOOKS_DIR, "shelf")
+
+os.makedirs(BOOKS_HUB_DIR, exist_ok=True)
+os.makedirs(BOOKS_SHELF_DIR, exist_ok=True)
 
 @lru_cache(maxsize=10)
 def load_book_cached(folder_name: str) -> Optional[Book]:
-    """
-    Loads the book from the pickle file.
+    """Loads the book from the pickle file under books/shelf.
     Cached so we don't re-read the disk on every click.
     """
-    file_path = os.path.join(BOOKS_DIR, folder_name, "book.pkl")
+    file_path = os.path.join(BOOKS_SHELF_DIR, folder_name, "book.pkl")
     if not os.path.exists(file_path):
         return None
 
@@ -34,26 +48,198 @@ def load_book_cached(folder_name: str) -> Optional[Book]:
         print(f"Error loading book {folder_name}: {e}")
         return None
 
+@app.post("/api/upload_epub")
+async def upload_epub(
+    file: UploadFile = File(...),
+    split_level: int = Form(2),
+):
+    filename = os.path.basename(file.filename) if file.filename else "uploaded.epub"
+    if not filename.lower().endswith(".epub"):
+        filename = filename + ".epub"
+    base_name, _ = os.path.splitext(filename)
+    folder_name = base_name + "_data"
+    epub_path = os.path.join(BOOKS_HUB_DIR, filename)
+    out_dir = os.path.join(BOOKS_SHELF_DIR, folder_name)
+
+    content = await file.read()
+    with open(epub_path, "wb") as f:
+        f.write(content)
+
+    # Clamp split_level to [1, 6]
+    if split_level < 1:
+        split_level = 1
+    elif split_level > 6:
+        split_level = 6
+
+    # Use per-upload split level by setting the env var that process_epub reads.
+    old_env = os.getenv("READER3_SPLIT_HEADING_LEVEL")
+    os.environ["READER3_SPLIT_HEADING_LEVEL"] = str(split_level)
+    try:
+        book = process_epub(epub_path, out_dir)
+    finally:
+        if old_env is None:
+            os.environ.pop("READER3_SPLIT_HEADING_LEVEL", None)
+        else:
+            os.environ["READER3_SPLIT_HEADING_LEVEL"] = old_env
+    save_to_pickle(book, out_dir)
+    load_book_cached.cache_clear()
+
+    return {
+        "status": "ok",
+        "book_id": folder_name,
+        "title": book.metadata.title,
+        "split_level": book.split_level,
+    }
+
+
+@app.post("/api/books/{book_id}/delete")
+async def delete_book(book_id: str):
+    safe_id = os.path.basename(book_id)
+    folder_path = os.path.join(BOOKS_SHELF_DIR, safe_id)
+
+    if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+        raise HTTPException(status_code=404, detail="Book folder not found")
+
+    if not safe_id.endswith("_data"):
+        raise HTTPException(status_code=400, detail="Refusing to delete non-data folder")
+
+    try:
+        shutil.rmtree(folder_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete book folder: {e}")
+
+    load_book_cached.cache_clear()
+
+    return {"status": "ok", "book_id": safe_id}
+
+
+@app.post("/api/books/{book_id}/resplit")
+async def resplit_book(book_id: str, split_level: int = Form(2)):
+    safe_id = os.path.basename(book_id)
+    folder_path = os.path.join(BOOKS_SHELF_DIR, safe_id)
+
+    if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+        raise HTTPException(status_code=404, detail="Book folder not found")
+
+    book = load_book_cached(safe_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    epub_path = os.path.join(BOOKS_HUB_DIR, book.source_file)
+    if not os.path.exists(epub_path):
+        raise HTTPException(status_code=404, detail="Source EPUB file not found")
+
+    if split_level < 1:
+        split_level = 1
+    elif split_level > 6:
+        split_level = 6
+
+    old_env = os.getenv("READER3_SPLIT_HEADING_LEVEL")
+    os.environ["READER3_SPLIT_HEADING_LEVEL"] = str(split_level)
+    try:
+        new_book = process_epub(epub_path, folder_path)
+    finally:
+        if old_env is None:
+            os.environ.pop("READER3_SPLIT_HEADING_LEVEL", None)
+        else:
+            os.environ["READER3_SPLIT_HEADING_LEVEL"] = old_env
+
+    save_to_pickle(new_book, folder_path)
+    load_book_cached.cache_clear()
+
+    return {
+        "status": "ok",
+        "book_id": safe_id,
+        "title": new_book.metadata.title,
+        "split_level": new_book.split_level,
+        "chapters": len(new_book.spine),
+    }
+
+
+@app.post("/api/hub/import")
+async def import_from_hub(filename: str = Form(...), split_level: int = Form(2)):
+    """Import or re-import an EPUB that already exists in books/hub into books/shelf."""
+    safe_name = os.path.basename(filename)
+    if not safe_name.lower().endswith(".epub"):
+        safe_name = safe_name + ".epub"
+
+    epub_path = os.path.join(BOOKS_HUB_DIR, safe_name)
+    if not os.path.exists(epub_path):
+        raise HTTPException(status_code=404, detail="EPUB not found in hub")
+
+    base_name, _ = os.path.splitext(safe_name)
+    folder_name = base_name + "_data"
+    out_dir = os.path.join(BOOKS_SHELF_DIR, folder_name)
+
+    if split_level < 1:
+        split_level = 1
+    elif split_level > 6:
+        split_level = 6
+
+    old_env = os.getenv("READER3_SPLIT_HEADING_LEVEL")
+    os.environ["READER3_SPLIT_HEADING_LEVEL"] = str(split_level)
+    try:
+        book = process_epub(epub_path, out_dir)
+    finally:
+        if old_env is None:
+            os.environ.pop("READER3_SPLIT_HEADING_LEVEL", None)
+        else:
+            os.environ["READER3_SPLIT_HEADING_LEVEL"] = old_env
+
+    save_to_pickle(book, out_dir)
+    load_book_cached.cache_clear()
+
+    return {
+        "status": "ok",
+        "book_id": folder_name,
+        "title": book.metadata.title,
+        "split_level": book.split_level,
+        "chapters": len(book.spine),
+    }
+
 @app.get("/", response_class=HTMLResponse)
 async def library_view(request: Request):
     """Lists all available processed books."""
     books = []
 
-    # Scan directory for folders ending in '_data' that have a book.pkl
-    if os.path.exists(BOOKS_DIR):
-        for item in os.listdir(BOOKS_DIR):
-            if item.endswith("_data") and os.path.isdir(item):
-                # Try to load it to get the title
-                book = load_book_cached(item)
-                if book:
-                    books.append({
-                        "id": item,
-                        "title": book.metadata.title,
-                        "author": ", ".join(book.metadata.authors),
-                        "chapters": len(book.spine)
-                    })
+    # Scan books/shelf for folders ending in '_data' that have a book.pkl
+    if os.path.exists(BOOKS_SHELF_DIR):
+        for item in os.listdir(BOOKS_SHELF_DIR):
+            if not item.endswith("_data"):
+                continue
 
-    return templates.TemplateResponse("library.html", {"request": request, "books": books})
+            folder_path = os.path.join(BOOKS_SHELF_DIR, item)
+            if not os.path.isdir(folder_path):
+                continue
+
+            # Try to load it to get the title
+            book = load_book_cached(item)
+            if book:
+                books.append({
+                    "id": item,
+                    "title": book.metadata.title,
+                    "author": ", ".join(book.metadata.authors),
+                    "chapters": len(book.spine),
+                    "split_level": getattr(book, "split_level", 1),
+                })
+
+    # List EPUB files in books/hub for management
+    hub_files = []
+    if os.path.exists(BOOKS_HUB_DIR):
+        for fname in os.listdir(BOOKS_HUB_DIR):
+            if not fname.lower().endswith(".epub"):
+                continue
+            base_name, _ = os.path.splitext(fname)
+            shelf_id = base_name + "_data"
+            matching = next((b for b in books if b["id"] == shelf_id), None)
+            hub_files.append({
+                "filename": fname,
+                "shelf_id": shelf_id,
+                "in_shelf": matching is not None,
+                "title": matching["title"] if matching else None,
+            })
+
+    return templates.TemplateResponse("library.html", {"request": request, "books": books, "hub_files": hub_files})
 
 @app.get("/read/{book_id}", response_class=HTMLResponse)
 async def redirect_to_first_chapter(book_id: str):
@@ -97,7 +283,7 @@ async def serve_image(book_id: str, image_name: str):
     safe_book_id = os.path.basename(book_id)
     safe_image_name = os.path.basename(image_name)
 
-    img_path = os.path.join(BOOKS_DIR, safe_book_id, "images", safe_image_name)
+    img_path = os.path.join(BOOKS_SHELF_DIR, safe_book_id, "images", safe_image_name)
 
     if not os.path.exists(img_path):
         raise HTTPException(status_code=404, detail="Image not found")

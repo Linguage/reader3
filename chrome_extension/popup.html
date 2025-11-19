@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>上传 EPUB 到 Reader3</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 12px;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #111827;
+        color: #e5e7eb;
+        width: 320px;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 8px;
+      }
+      #drop-zone {
+        border: 2px dashed #4b5563;
+        border-radius: 8px;
+        padding: 24px 12px;
+        text-align: center;
+        cursor: pointer;
+        color: #9ca3af;
+        transition: all 0.15s ease;
+      }
+      #drop-zone.hover {
+        border-color: #60a5fa;
+        background: rgba(37, 99, 235, 0.15);
+        color: #e5e7eb;
+      }
+      #file-input {
+        display: none;
+      }
+      #split-wrapper {
+        margin-top: 10px;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #d1d5db;
+      }
+      #split-level {
+        background: #111827;
+        color: #e5e7eb;
+        border: 1px solid #4b5563;
+        border-radius: 4px;
+        padding: 2px 6px;
+        font-size: 13px;
+      }
+      #status {
+        margin-top: 10px;
+        font-size: 13px;
+        min-height: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>上传 EPUB 到 Reader3</h1>
+    <div id="drop-zone">拖拽 EPUB 文件到这里，或点击选择文件</div>
+    <input id="file-input" type="file" accept=".epub" />
+    <div id="split-wrapper">
+      <label for="split-level">拆解层级：</label>
+      <select id="split-level">
+        <option value="1">1 级（仅 h1）</option>
+        <option value="2" selected>2 级（h1–h2）</option>
+        <option value="3">3 级（到 h3）</option>
+        <option value="4">4 级</option>
+        <option value="5">5 级</option>
+        <option value="6">6 级</option>
+      </select>
+    </div>
+    <div id="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

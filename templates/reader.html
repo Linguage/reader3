@@ -52,11 +52,16 @@
                 <li class="toc-item">
                     <!--
                         Matching Logic:
-                        If the TOC item filename matches the current chapter filename, mark active.
-                        Ideally we match spine indices, but Reader 3 TOC maps to filenames.
-                        We use a simple hash matching logic here.
+                        Prefer using anchor_map (file or file#anchor -> spine index)
+                        to decide which TOC entry is active for the current chapter_index.
+                        If anchor_map is empty (older data), fall back to filename match.
                     -->
-                    {% set is_active = current_chapter.href == item.file_href %}
+                    {% set amap = book.anchor_map %}
+                    {% set idx_from_href = amap.get(item.href) if amap else none %}
+                    {% set idx_from_file = amap.get(item.file_href) if amap else none %}
+                    {% set is_active = (idx_from_href is not none and idx_from_href == chapter_index)
+                        or (idx_from_href is none and idx_from_file is not none and idx_from_file == chapter_index)
+                        or (not amap and current_chapter.href == item.file_href) %}
 
                     <!--
                        We need to find which linear chapter index (0, 1, 2) corresponds
@@ -78,7 +83,7 @@
 
                        BETTER FIX: Use JavaScript to match filenames.
                     -->
-                    <a href="#" onclick="findAndGo('{{ item.file_href }}')"
+                    <a href="#" onclick="findAndGo('{{ item.href }}')"
                        class="toc-link {% if is_active %}active{% endif %}">
                         {{ item.title }}
                     </a>
@@ -122,6 +127,34 @@
     </div>
 
     <script>
+        // Preserve sidebar (TOC) scroll position per book
+        const sidebar = document.getElementById("sidebar");
+        const SCROLL_KEY = "reader3_sidebar_scroll_{{ book_id }}";
+
+        (function restoreSidebarScroll() {
+            if (!sidebar) return;
+            try {
+                const saved = localStorage.getItem(SCROLL_KEY);
+                if (saved !== null) {
+                    const y = parseInt(saved, 10);
+                    if (!Number.isNaN(y)) {
+                        sidebar.scrollTop = y;
+                    }
+                }
+            } catch (e) {
+                console.debug("Failed to restore sidebar scroll:", e);
+            }
+        })();
+
+        window.addEventListener("beforeunload", () => {
+            if (!sidebar) return;
+            try {
+                localStorage.setItem(SCROLL_KEY, String(sidebar.scrollTop));
+            } catch (e) {
+                console.debug("Failed to persist sidebar scroll:", e);
+            }
+        });
+
         // Helper to map TOC filenames to Spine Indices
         // Pass the spine data from python to JS
         const spineMap = {
@@ -130,25 +163,79 @@
             {% endfor %}
         };
 
+        // Secondary map using just the basename, to be tolerant of path differences
+        const spineBasenameMap = {};
+        for (const [path, idx] of Object.entries(spineMap)) {
+            const parts = path.split("/");
+            const name = parts[parts.length - 1];
+            if (!(name in spineBasenameMap)) {
+                spineBasenameMap[name] = idx;
+            }
+        }
+
+        // Anchor map produced by the backend during EPUB processing.
+        // Keys look like "file.xhtml#anchor" or just "file.xhtml" and
+        // values are the linear spine index.
+        const anchorMap = {
+            {% for key, val in book.anchor_map.items() %}
+            "{{ key }}": {{ val }},
+            {% endfor %}
+        };
+
         function findAndGo(filename) {
             // The TOC usually has specific filenames e.g. "text/part001.html"
             // Sometimes it has anchors "text/part001.html#header"
-            // We strip the anchor to find the page index
             const cleanFile = filename.split('#')[0];
-            const anchor = filename.split('#')[1];
+            const hasAnchor = filename.indexOf('#') !== -1;
+            const anchor = hasAnchor ? filename.split('#')[1] : null;
 
-            const idx = spineMap[cleanFile];
+            let idx;
+
+            // 1) Prefer backend-provided anchor_map for split chapters
+            if (anchor && anchorMap[cleanFile + '#' + anchor] !== undefined) {
+                idx = anchorMap[cleanFile + '#' + anchor];
+            } else if (anchorMap[cleanFile] !== undefined) {
+                idx = anchorMap[cleanFile];
+            } else {
+                // 2) Fallback to filename/basename mapping for older data
+                idx = spineMap[cleanFile];
+                if (idx === undefined) {
+                    const parts = cleanFile.split("/");
+                    const basename = parts[parts.length - 1];
+                    idx = spineBasenameMap[basename];
+                }
+            }
 
             if (idx !== undefined) {
                 let url = "/read/{{ book_id }}/" + idx;
-                // If there was an anchor, we could try to scroll to it,
-                // but simple page loads often lose anchor position without extra JS.
-                // Let's just go to the page.
+                if (anchor) {
+                    url += "#" + encodeURIComponent(anchor);
+                }
                 window.location.href = url;
             } else {
                 console.log("Could not find index for", filename);
             }
         }
+
+        // After a chapter loads, if there's a hash like #section-id,
+        // scroll the inner main container to that element so large
+        // documents can jump to deep headings even though #main is scrollable.
+        window.addEventListener("load", () => {
+            const main = document.getElementById("main");
+            if (!main) return;
+
+            const hash = window.location.hash;
+            if (!hash || hash.length <= 1) return;
+
+            const id = decodeURIComponent(hash.substring(1));
+            const target = document.getElementById(id);
+            if (!target) return;
+
+            const rect = target.getBoundingClientRect();
+            const mainRect = main.getBoundingClientRect();
+            const offset = rect.top - mainRect.top + main.scrollTop - 40; // small padding
+            main.scrollTop = offset;
+        });
     </script>
 </body>
 </html>

@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Reader3 EPUB Uploader",
+  "version": "1.0.0",
+  "description": "上传 EPUB 文件到本地 Reader3 服务器并生成书库。",
+  "action": {
+    "default_title": "上传 EPUB 到 Reader3",
+    "default_popup": "popup.html"
+  },
+  "permissions": ["tabs"],
+  "host_permissions": ["http://localhost:8123/*"]
+}
