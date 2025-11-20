@@ -87,6 +87,7 @@ async def upload_epub(
 @app.post("/api/upload_md")
 async def upload_md(
     file: UploadFile = File(...),
+    split_level: int = Form(2),
 ):
     filename = os.path.basename(file.filename) if file.filename else "uploaded.md"
     lower = filename.lower()
@@ -101,7 +102,12 @@ async def upload_md(
     with open(md_path, "wb") as f:
         f.write(content)
 
-    book = process_markdown(md_path, out_dir)
+    if split_level < 1:
+        split_level = 1
+    elif split_level > 6:
+        split_level = 6
+
+    book = process_markdown(md_path, out_dir, split_level=split_level)
     save_to_pickle(book, out_dir)
     load_book_cached.cache_clear()
 
@@ -159,7 +165,7 @@ async def resplit_book(book_id: str, split_level: int = Form(2)):
             split_level = 6
         new_book = process_epub(source_path, folder_path, split_level=split_level)
     elif ext in (".md", ".markdown"):
-        new_book = process_markdown(source_path, folder_path)
+        new_book = process_markdown(source_path, folder_path, split_level=split_level)
     else:
         raise HTTPException(status_code=400, detail="Unsupported source file type for resplit")
 

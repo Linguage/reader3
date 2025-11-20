@@ -44,6 +44,15 @@
             <div style="font-size: 0.9em; color: #555; margin-bottom: 8px;">选择 Markdown (.md) 文件上传后即可在网页中阅读。</div>
             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                 <input id="upload-md-file" type="file" accept=".md,.markdown" />
+                <label for="upload-md-split-level">拆解层级：</label>
+                <select id="upload-md-split-level">
+                    <option value="1">1 级（仅 h1）</option>
+                    <option value="2" selected>2 级（h1–h2）</option>
+                    <option value="3">3 级（到 h3）</option>
+                    <option value="4">4 级</option>
+                    <option value="5">5 级</option>
+                    <option value="6">6 级</option>
+                </select>
                 <button type="button" class="btn" onclick="uploadMarkdown()">上传 Markdown</button>
                 <span id="upload-md-status" style="font-size: 0.85em; color: #666;"></span>
             </div>
@@ -152,6 +161,7 @@
 
         async function uploadMarkdown() {
             const fileInput = document.getElementById("upload-md-file");
+            const splitSelect = document.getElementById("upload-md-split-level");
             const statusEl = document.getElementById("upload-md-status");
 
             if (!fileInput.files || !fileInput.files[0]) {
@@ -165,6 +175,7 @@
 
             const formData = new FormData();
             formData.append("file", fileInput.files[0]);
+            formData.append("split_level", splitSelect ? (splitSelect.value || "2") : "2");
 
             try {
                 const res = await fetch("/api/upload_md", {

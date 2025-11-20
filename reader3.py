@@ -476,10 +476,21 @@ def process_epub(epub_path: str, output_dir: str, split_level: Optional[int] = N
     return final_book
 
 
-def process_markdown(md_path: str, output_dir: str) -> Book:
+def process_markdown(md_path: str, output_dir: str, split_level: Optional[int] = None) -> Book:
     print(f"Loading markdown {md_path}...")
     with open(md_path, "r", encoding="utf-8") as f:
         md_text = f.read()
+
+    if split_level is None:
+        split_level = 2
+    try:
+        split_level = int(split_level)
+    except (TypeError, ValueError):
+        split_level = 2
+    if split_level < 1:
+        split_level = 1
+    elif split_level > 6:
+        split_level = 6
 
     title: Optional[str] = None
     for line in md_text.splitlines():
@@ -532,6 +543,7 @@ def process_markdown(md_path: str, output_dir: str) -> Book:
     current_anchor: Optional[str] = None
     current_level: Optional[int] = None
     used_ids: Dict[str, bool] = {}
+    heading_levels = {f"h{i}": i for i in range(1, 7)}
 
     def flush_segment() -> None:
         nonlocal current_nodes, current_title, current_anchor, current_level
@@ -556,28 +568,31 @@ def process_markdown(md_path: str, output_dir: str) -> Book:
             continue
         if isinstance(node, Comment):
             continue
-        if isinstance(node, Tag) and node.name in ("h1", "h2", "h3"):
-            flush_segment()
-            heading_text = node.get_text(separator=" ", strip=True) or None
-            if heading_text is None:
+        if isinstance(node, Tag) and node.name in heading_levels:
+            level = heading_levels[node.name]
+            if level <= split_level:
+                flush_segment()
+                heading_text = node.get_text(separator=" ", strip=True) or None
+                if heading_text is None:
+                    continue
+                anchor = node.get("id")
+                if not anchor:
+                    base = re.sub(r"[^a-zA-Z0-9]+", "-", heading_text).strip("-").lower() or "section"
+                    anchor = base
+                    counter = 2
+                    while anchor in used_ids:
+                        anchor = f"{base}-{counter}"
+                        counter += 1
+                    node["id"] = anchor
+                used_ids[anchor] = True
+                current_title = heading_text
+                current_anchor = anchor
+                current_level = level
+                current_nodes.append(node)
                 continue
-            anchor = node.get("id")
-            if not anchor:
-                base = re.sub(r"[^a-zA-Z0-9]+", "-", heading_text).strip("-").lower() or "section"
-                anchor = base
-                counter = 2
-                while anchor in used_ids:
-                    anchor = f"{base}-{counter}"
-                    counter += 1
-                node["id"] = anchor
-            used_ids[anchor] = True
-            current_title = heading_text
-            current_anchor = anchor
-            try:
-                current_level = int(node.name[1])
-            except Exception:
-                current_level = None
+            # heading deeper than split level -> do not start new segment, keep inline
             current_nodes.append(node)
+            continue
         else:
             current_nodes.append(node)
 
@@ -646,7 +661,8 @@ def process_markdown(md_path: str, output_dir: str) -> Book:
         for idx in range(len(segments_html)):
             seg_title = segment_titles[idx] or f"Section {idx + 1}"
             anchor = segment_anchors[idx]
-            level = segment_levels[idx] or 2
+            seg_level = segment_levels[idx] or 1
+            level = max(1, min(split_level, seg_level))
             href = file_name
             if anchor:
                 href = f"{file_name}#{anchor}"
@@ -668,7 +684,7 @@ def process_markdown(md_path: str, output_dir: str) -> Book:
                 parent_entry.children.append(entry)
             stack.append((level, entry))
 
-    attach_chapter_indices_to_toc(toc_entries, anchor_map, max_depth=None)
+    attach_chapter_indices_to_toc(toc_entries, anchor_map, max_depth=split_level)
 
     final_book = Book(
         metadata=metadata,
@@ -678,7 +694,7 @@ def process_markdown(md_path: str, output_dir: str) -> Book:
         source_file=os.path.basename(md_path),
         processed_at=datetime.now().isoformat(),
         anchor_map=anchor_map,
-        split_level=1,
+        split_level=split_level,
     )
 
     return final_book
