@@ -4,6 +4,7 @@ Parses an EPUB file into a structured object that can be used to serve the book 
 
 import os
 import pickle
+import re
 import shutil
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
@@ -38,6 +39,8 @@ class TOCEntry:
     file_href: str    # just the filename (e.g., 'part01.html')
     anchor: str       # just the anchor (e.g., 'chapter1'), empty if none
     children: List['TOCEntry'] = field(default_factory=list)
+    depth: int = 0
+    chapter_index: Optional[int] = None
 
 
 @dataclass
@@ -131,7 +134,8 @@ def parse_toc_recursive(toc_list, depth=0) -> List[TOCEntry]:
                 href=section.href,
                 file_href=section.href.split('#')[0],
                 anchor=section.href.split('#')[1] if '#' in section.href else "",
-                children=parse_toc_recursive(children, depth + 1)
+                children=parse_toc_recursive(children, depth + 1),
+                depth=depth,
             )
             result.append(entry)
         elif isinstance(item, epub.Link):
@@ -139,7 +143,8 @@ def parse_toc_recursive(toc_list, depth=0) -> List[TOCEntry]:
                 title=item.title,
                 href=item.href,
                 file_href=item.href.split('#')[0],
-                anchor=item.href.split('#')[1] if '#' in item.href else ""
+                anchor=item.href.split('#')[1] if '#' in item.href else "",
+                depth=depth,
             )
             result.append(entry)
         # Note: ebooklib sometimes returns direct Section objects without children
@@ -148,7 +153,8 @@ def parse_toc_recursive(toc_list, depth=0) -> List[TOCEntry]:
                 title=item.title,
                 href=item.href,
                 file_href=item.href.split('#')[0],
-                anchor=item.href.split('#')[1] if '#' in item.href else ""
+                anchor=item.href.split('#')[1] if '#' in item.href else "",
+                depth=depth,
             )
              result.append(entry)
 
@@ -193,9 +199,84 @@ def extract_metadata_robust(book_obj) -> BookMetadata:
     )
 
 
+def _resolve_toc_entry_index(entry: TOCEntry, anchor_map: Dict[str, int]) -> Optional[int]:
+    """Resolve which spine index a TOC entry should point to using anchor_map.
+
+    We try several key variants to be robust against path differences, mimicking
+    the logic used on the frontend (full path, basename, with/without anchor).
+    """
+
+    if not anchor_map:
+        return None
+
+    file_href = entry.file_href or ""
+    anchor = entry.anchor or ""
+    basename = os.path.basename(file_href) if file_href else ""
+
+    candidates = []
+
+    # If there is an explicit anchor, prefer anchor-based lookups.
+    if anchor:
+        if entry.href:
+            candidates.append(entry.href)
+        if file_href:
+            candidates.append(f"{file_href}#{anchor}")
+        if basename:
+            candidates.append(f"{basename}#{anchor}")
+
+    # Fallback: file-level keys.
+    if file_href:
+        candidates.append(file_href)
+    if basename:
+        candidates.append(basename)
+
+    for key in candidates:
+        if key in anchor_map:
+            return anchor_map[key]
+
+    return None
+
+
+def attach_chapter_indices_to_toc(
+    toc_entries: List[TOCEntry],
+    anchor_map: Dict[str, int],
+    max_depth: Optional[int] = None,
+    _ancestors: Optional[List[TOCEntry]] = None,
+) -> None:
+    """Populate chapter_index for each TOCEntry using anchor_map.
+
+    max_depth 决定“哪些 TOC 层级拥有独立页面”：
+    - depth <= max_depth: 优先使用自身解析到的章节索引。
+    - depth > max_depth: 继承最近的上级（depth <= max_depth 且 chapter_index 不为 None）的索引，
+      这样深层小节在同一页面内通过锚点定位，而不是再拆出新页。
+
+    如果 max_depth 为 None，则行为与旧版完全一致：所有节点都尽量解析自己的章节索引。
+    """
+
+    if _ancestors is None:
+        _ancestors = []
+
+    for entry in toc_entries:
+        # 1) 先解析自身能落在哪个物理章节
+        entry.chapter_index = _resolve_toc_entry_index(entry, anchor_map)
+
+        # 2) 如果设置了 max_depth，且当前节点比该深度更深，
+        #    则尝试继承最近的浅层祖先的 chapter_index。
+        if max_depth is not None and entry.depth > max_depth:
+            for anc in reversed(_ancestors):
+                if anc.chapter_index is not None and anc.depth <= max_depth:
+                    entry.chapter_index = anc.chapter_index
+                    break
+
+        # 3) 递归处理子节点，当前节点作为祖先传下去
+        new_ancestors = _ancestors + [entry]
+        if entry.children:
+            attach_chapter_indices_to_toc(entry.children, anchor_map, max_depth=max_depth, _ancestors=new_ancestors)
+
+
 # --- Main Conversion Logic ---
 
-def process_epub(epub_path: str, output_dir: str) -> Book:
+def process_epub(epub_path: str, output_dir: str, split_level: Optional[int] = None) -> Book:
 
     # 1. Load Book
     print(f"Loading {epub_path}...")
@@ -204,11 +285,22 @@ def process_epub(epub_path: str, output_dir: str) -> Book:
     # 2. Extract Metadata
     metadata = extract_metadata_robust(book)
 
-    # Determine heading split level (1-6) for logical chapter splitting
-    try:
-        split_level = int(os.getenv("READER3_SPLIT_HEADING_LEVEL", "2"))
-    except ValueError:
-        split_level = 2
+    # Determine heading split level (1-6) for logical chapter splitting.
+    # Priority:
+    #   1) explicit split_level argument from caller (API)
+    #   2) READER3_SPLIT_HEADING_LEVEL env var (CLI / legacy)
+    #   3) fallback default = 2
+    if split_level is None:
+        try:
+            split_level = int(os.getenv("READER3_SPLIT_HEADING_LEVEL", "2"))
+        except ValueError:
+            split_level = 2
+    else:
+        try:
+            split_level = int(split_level)
+        except ValueError:
+            split_level = 2
+
     if split_level < 1:
         split_level = 1
     elif split_level > 6:
@@ -291,39 +383,49 @@ def process_epub(epub_path: str, output_dir: str) -> Book:
             body = soup.find('body')
             content_root = body if body else soup
 
-            heading_tags = {f"h{lvl}" for lvl in range(1, split_level + 1)}
+            full_html = "".join(str(x) for x in content_root.contents)
+
             segments = []
-            current_nodes = []
-            current_title = None
-
-            for child in content_root.children:
-                tag_name = getattr(child, "name", None)
-                if tag_name and tag_name.lower() in heading_tags:
-                    if current_nodes:
-                        segments.append((current_title, list(current_nodes)))
-                        current_nodes = []
-                    current_title = child.get_text(separator=" ", strip=True) or None
-                    current_nodes.append(child)
+            if split_level >= 1:
+                pattern = re.compile(
+                    r"(<h([1-{}])[^>]*>.*?</h\\2>)".format(split_level),
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
+                matches = list(pattern.finditer(full_html))
+                if not matches:
+                    segments.append((None, full_html))
                 else:
-                    current_nodes.append(child)
+                    first_start = matches[0].start()
+                    if first_start > 0:
+                        pre_html = full_html[:first_start]
+                        if pre_html.strip():
+                            segments.append((None, pre_html))
+                    for idx_m, m in enumerate(matches):
+                        start = m.start()
+                        end = matches[idx_m + 1].start() if idx_m + 1 < len(matches) else len(full_html)
+                        seg_html = full_html[start:end]
+                        heading_html = m.group(1)
+                        heading_soup = BeautifulSoup(heading_html, 'html.parser')
+                        heading_text = heading_soup.get_text(separator=" ", strip=True) or None
+                        segments.append(heading_text and (heading_text, seg_html) or (None, seg_html))
+            else:
+                segments.append((None, full_html))
 
-            if current_nodes:
-                segments.append((current_title, list(current_nodes)))
+            print(f"[reader3] split_level={split_level}, file={item.get_name()}, segments={len(segments) if segments else 0}")
 
             if not segments or len(segments) == 1:
-                final_html = "".join([str(x) for x in content_root.contents])
+                final_html = segments[0][1] if segments else full_html
                 section_soup = BeautifulSoup(final_html, 'html.parser')
                 chapter = ChapterContent(
                     id=item_id,
-                    href=item.get_name(), # Important: This links TOC to Content
-                    title=f"Section {order_counter+1}", # Fallback, real titles come from TOC
+                    href=item.get_name(),
+                    title=f"Section {order_counter+1}",
                     content=final_html,
                     text=extract_plain_text(section_soup),
                     order=order_counter
                 )
                 spine_chapters.append(chapter)
                 register_anchors_from_soup(section_soup, item.get_name(), order_counter, anchor_map)
-                # Map both full path and basename for file-level lookup
                 fname = item.get_name()
                 base = os.path.basename(fname)
                 if fname not in anchor_map:
@@ -332,13 +434,13 @@ def process_epub(epub_path: str, output_dir: str) -> Book:
                     anchor_map[base] = order_counter
                 order_counter += 1
             else:
-                for seg_idx, (seg_title, nodes) in enumerate(segments):
-                    final_html = "".join([str(x) for x in nodes])
+                for seg_idx, (seg_title, seg_html) in enumerate(segments):
+                    final_html = seg_html
                     section_soup = BeautifulSoup(final_html, 'html.parser')
                     chapter = ChapterContent(
                         id=f"{item_id}_{seg_idx}",
-                        href=item.get_name(), # Important: This links TOC to Content
-                        title=seg_title or f"Section {order_counter+1}", # Fallback, real titles come from TOC
+                        href=item.get_name(),
+                        title=seg_title or f"Section {order_counter+1}",
                         content=final_html,
                         text=extract_plain_text(section_soup),
                         order=order_counter
@@ -354,7 +456,11 @@ def process_epub(epub_path: str, output_dir: str) -> Book:
                             anchor_map[base] = order_counter
                     order_counter += 1
 
-    # 7. Final Assembly
+    # 7. Attach TOC → chapter index mapping now that anchor_map is complete.
+    #    这里使用 split_level 作为“最大 TOC 深度”，决定哪些目录层级拥有独立页面。
+    attach_chapter_indices_to_toc(toc_structure, anchor_map, max_depth=split_level)
+
+    # 8. Final Assembly
     final_book = Book(
         metadata=metadata,
         spine=spine_chapters,

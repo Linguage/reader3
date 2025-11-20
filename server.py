@@ -71,16 +71,8 @@ async def upload_epub(
     elif split_level > 6:
         split_level = 6
 
-    # Use per-upload split level by setting the env var that process_epub reads.
-    old_env = os.getenv("READER3_SPLIT_HEADING_LEVEL")
-    os.environ["READER3_SPLIT_HEADING_LEVEL"] = str(split_level)
-    try:
-        book = process_epub(epub_path, out_dir)
-    finally:
-        if old_env is None:
-            os.environ.pop("READER3_SPLIT_HEADING_LEVEL", None)
-        else:
-            os.environ["READER3_SPLIT_HEADING_LEVEL"] = old_env
+    # Call process_epub with explicit split_level so it does not rely on env.
+    book = process_epub(epub_path, out_dir, split_level=split_level)
     save_to_pickle(book, out_dir)
     load_book_cached.cache_clear()
 
@@ -134,15 +126,7 @@ async def resplit_book(book_id: str, split_level: int = Form(2)):
     elif split_level > 6:
         split_level = 6
 
-    old_env = os.getenv("READER3_SPLIT_HEADING_LEVEL")
-    os.environ["READER3_SPLIT_HEADING_LEVEL"] = str(split_level)
-    try:
-        new_book = process_epub(epub_path, folder_path)
-    finally:
-        if old_env is None:
-            os.environ.pop("READER3_SPLIT_HEADING_LEVEL", None)
-        else:
-            os.environ["READER3_SPLIT_HEADING_LEVEL"] = old_env
+    new_book = process_epub(epub_path, folder_path, split_level=split_level)
 
     save_to_pickle(new_book, folder_path)
     load_book_cached.cache_clear()
@@ -176,15 +160,7 @@ async def import_from_hub(filename: str = Form(...), split_level: int = Form(2))
     elif split_level > 6:
         split_level = 6
 
-    old_env = os.getenv("READER3_SPLIT_HEADING_LEVEL")
-    os.environ["READER3_SPLIT_HEADING_LEVEL"] = str(split_level)
-    try:
-        book = process_epub(epub_path, out_dir)
-    finally:
-        if old_env is None:
-            os.environ.pop("READER3_SPLIT_HEADING_LEVEL", None)
-        else:
-            os.environ["READER3_SPLIT_HEADING_LEVEL"] = old_env
+    book = process_epub(epub_path, out_dir, split_level=split_level)
 
     save_to_pickle(book, out_dir)
     load_book_cached.cache_clear()

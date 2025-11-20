@@ -57,11 +57,13 @@
                         If anchor_map is empty (older data), fall back to filename match.
                     -->
                     {% set amap = book.anchor_map %}
+                    {% set has_direct_index = (item.chapter_index is not none) %}
                     {% set idx_from_href = amap.get(item.href) if amap else none %}
                     {% set idx_from_file = amap.get(item.file_href) if amap else none %}
-                    {% set is_active = (idx_from_href is not none and idx_from_href == chapter_index)
-                        or (idx_from_href is none and idx_from_file is not none and idx_from_file == chapter_index)
-                        or (not amap and current_chapter.href == item.file_href) %}
+                    {% set is_active = (has_direct_index and item.chapter_index == chapter_index)
+                        or (not has_direct_index and idx_from_href is not none and idx_from_href == chapter_index)
+                        or (not has_direct_index and idx_from_href is none and idx_from_file is not none and idx_from_file == chapter_index)
+                        or (not has_direct_index and not amap and current_chapter.href == item.file_href) %}
 
                     <!--
                        We need to find which linear chapter index (0, 1, 2) corresponds
@@ -83,7 +85,7 @@
 
                        BETTER FIX: Use JavaScript to match filenames.
                     -->
-                    <a href="#" onclick="findAndGo('{{ item.href }}')"
+                    <a href="#" onclick="findAndGo('{{ item.href }}', {{ item.chapter_index if item.chapter_index is not none else 'null' }})"
                        class="toc-link {% if is_active %}active{% endif %}">
                         {{ item.title }}
                     </a>
@@ -182,27 +184,31 @@
             {% endfor %}
         };
 
-        function findAndGo(filename) {
+        function findAndGo(filename, directIndex) {
             // The TOC usually has specific filenames e.g. "text/part001.html"
             // Sometimes it has anchors "text/part001.html#header"
             const cleanFile = filename.split('#')[0];
             const hasAnchor = filename.indexOf('#') !== -1;
             const anchor = hasAnchor ? filename.split('#')[1] : null;
 
-            let idx;
+            // 1) If backend has already resolved the exact chapter index for this
+            //    TOC entry, trust that first. This decouples navigation from how
+            //    we physically split chapters.
+            let idx = (directIndex !== null && directIndex !== undefined) ? directIndex : undefined;
 
-            // 1) Prefer backend-provided anchor_map for split chapters
-            if (anchor && anchorMap[cleanFile + '#' + anchor] !== undefined) {
-                idx = anchorMap[cleanFile + '#' + anchor];
-            } else if (anchorMap[cleanFile] !== undefined) {
-                idx = anchorMap[cleanFile];
-            } else {
-                // 2) Fallback to filename/basename mapping for older data
-                idx = spineMap[cleanFile];
-                if (idx === undefined) {
-                    const parts = cleanFile.split("/");
-                    const basename = parts[parts.length - 1];
-                    idx = spineBasenameMap[basename];
+            // 2) If no direct index, fall back to anchorMap/spineMap-based lookup
+            if (idx === undefined) {
+                if (anchor && anchorMap[cleanFile + '#' + anchor] !== undefined) {
+                    idx = anchorMap[cleanFile + '#' + anchor];
+                } else if (anchorMap[cleanFile] !== undefined) {
+                    idx = anchorMap[cleanFile];
+                } else {
+                    idx = spineMap[cleanFile];
+                    if (idx === undefined) {
+                        const parts = cleanFile.split("/");
+                        const basename = parts[parts.length - 1];
+                        idx = spineBasenameMap[basename];
+                    }
                 }
             }
 
@@ -213,7 +219,7 @@
                 }
                 window.location.href = url;
             } else {
-                console.log("Could not find index for", filename);
+                console.log("Could not find index for", filename, "directIndex=", directIndex);
             }
         }
 
