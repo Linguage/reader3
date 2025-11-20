@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 
-from reader3 import Book, BookMetadata, ChapterContent, TOCEntry, process_epub, save_to_pickle
+from reader3 import Book, BookMetadata, ChapterContent, TOCEntry, process_epub, process_markdown, save_to_pickle
 
 app = FastAPI()
 app.add_middleware(
@@ -84,6 +84,35 @@ async def upload_epub(
     }
 
 
+@app.post("/api/upload_md")
+async def upload_md(
+    file: UploadFile = File(...),
+):
+    filename = os.path.basename(file.filename) if file.filename else "uploaded.md"
+    lower = filename.lower()
+    if not (lower.endswith(".md") or lower.endswith(".markdown")):
+        filename = filename + ".md"
+    base_name, _ = os.path.splitext(filename)
+    folder_name = base_name + "_data"
+    md_path = os.path.join(BOOKS_HUB_DIR, filename)
+    out_dir = os.path.join(BOOKS_SHELF_DIR, folder_name)
+
+    content = await file.read()
+    with open(md_path, "wb") as f:
+        f.write(content)
+
+    book = process_markdown(md_path, out_dir)
+    save_to_pickle(book, out_dir)
+    load_book_cached.cache_clear()
+
+    return {
+        "status": "ok",
+        "book_id": folder_name,
+        "title": book.metadata.title,
+        "split_level": book.split_level,
+    }
+
+
 @app.post("/api/books/{book_id}/delete")
 async def delete_book(book_id: str):
     safe_id = os.path.basename(book_id)
@@ -117,16 +146,22 @@ async def resplit_book(book_id: str, split_level: int = Form(2)):
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
 
-    epub_path = os.path.join(BOOKS_HUB_DIR, book.source_file)
-    if not os.path.exists(epub_path):
-        raise HTTPException(status_code=404, detail="Source EPUB file not found")
+    source_path = os.path.join(BOOKS_HUB_DIR, book.source_file)
+    if not os.path.exists(source_path):
+        raise HTTPException(status_code=404, detail="Source file not found in hub")
 
-    if split_level < 1:
-        split_level = 1
-    elif split_level > 6:
-        split_level = 6
+    ext = os.path.splitext(book.source_file)[1].lower()
 
-    new_book = process_epub(epub_path, folder_path, split_level=split_level)
+    if ext == ".epub":
+        if split_level < 1:
+            split_level = 1
+        elif split_level > 6:
+            split_level = 6
+        new_book = process_epub(source_path, folder_path, split_level=split_level)
+    elif ext in (".md", ".markdown"):
+        new_book = process_markdown(source_path, folder_path)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported source file type for resplit")
 
     save_to_pickle(new_book, folder_path)
     load_book_cached.cache_clear()

@@ -6,44 +6,84 @@
     <title>{{ book.metadata.title }}</title>
     <style>
         /* Layout */
-        body { margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; font-family: "Georgia", serif; background: #fff; }
+        body { margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; font-family: "Georgia", serif; }
+        body.theme-light { background: #f5f5f7; color: #111827; }
+        body.theme-dark { background: #020617; color: #e5e7eb; }
 
         /* Sidebar */
-        #sidebar { width: 300px; background: #f8f9fa; border-right: 1px solid #e9ecef; overflow-y: auto; padding: 20px; flex-shrink: 0; }
-        .nav-header { font-family: -apple-system, sans-serif; font-weight: bold; color: #495057; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #dee2e6; }
-        .nav-home { display: block; margin-bottom: 20px; color: #3498db; text-decoration: none; font-family: -apple-system, sans-serif; font-size: 0.9em; }
+        #sidebar { width: 300px; background: rgba(248,249,250,0.95); border-right: 1px solid #e5e7eb; overflow-y: auto; padding: 20px; flex-shrink: 0; backdrop-filter: blur(12px); }
+        .nav-header-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #dee2e6; }
+        .nav-header { font-family: -apple-system, sans-serif; font-weight: bold; color: #111827; font-size: 1rem; }
+        .nav-home { display: block; margin-bottom: 16px; color: #2563eb; text-decoration: none; font-family: -apple-system, sans-serif; font-size: 0.9em; }
+        .nav-home:hover { color: #1d4ed8; }
+        .theme-toggle-btn { border-radius: 999px; border: 1px solid rgba(148,163,184,0.9); background: rgba(255,255,255,0.85); color: #0f172a; font-size: 0.75rem; padding: 4px 10px; cursor: pointer; transition: background 0.2s, color 0.2s, border-color 0.2s, transform 0.1s; white-space: nowrap; }
+        .theme-toggle-btn:hover { background: #0f172a; color: #f9fafb; border-color: #0f172a; transform: translateY(-1px); }
+        body.theme-dark #sidebar { background: rgba(15,23,42,0.95); border-right-color: #1f2937; }
+        body.theme-dark .nav-header { color: #e5e7eb; }
+        body.theme-dark .nav-home { color: #60a5fa; }
+        body.theme-dark .nav-home:hover { color: #bfdbfe; }
+        body.theme-dark .theme-toggle-btn { background: rgba(15,23,42,0.95); color: #e5e7eb; border-color: #4b5563; }
+        body.theme-dark .theme-toggle-btn:hover { background: #e5e7eb; color: #020617; border-color: #e5e7eb; }
 
         /* TOC Tree */
         ul.toc-list { list-style: none; padding-left: 0; margin: 0; }
         ul.toc-list ul { padding-left: 20px; } /* Indent children */
         li.toc-item { margin-bottom: 8px; }
-        a.toc-link { text-decoration: none; color: #495057; font-size: 0.95em; display: block; padding: 4px 0; line-height: 1.4; }
-        a.toc-link:hover { color: #000; text-decoration: underline; }
-        a.toc-link.active { color: #d63384; font-weight: bold; }
+        a.toc-link { text-decoration: none; color: #4b5563; font-size: 0.95em; display: block; padding: 4px 4px; line-height: 1.4; border-radius: 4px; transition: background 0.15s, color 0.15s; }
+        a.toc-link:hover { color: #111827; background: rgba(148,163,184,0.16); text-decoration: none; }
+        a.toc-link.active { color: #1d4ed8; font-weight: bold; background: rgba(37,99,235,0.12); }
+        body.theme-dark a.toc-link { color: #9ca3af; }
+        body.theme-dark a.toc-link:hover { color: #f9fafb; background: rgba(55,65,81,0.8); }
+        body.theme-dark a.toc-link.active { color: #bfdbfe; background: rgba(37,99,235,0.35); }
 
         /* Main Content */
-        #main { flex-grow: 1; overflow-y: auto; position: relative; scroll-behavior: smooth; }
-        .content-container { max-width: 700px; margin: 0 auto; padding: 60px 40px; line-height: 1.8; font-size: 1.15em; color: #212529; }
+        #main { flex-grow: 1; overflow-y: auto; position: relative; scroll-behavior: smooth; background: radial-gradient(circle at top left, rgba(59,130,246,0.10), transparent 55%), radial-gradient(circle at bottom right, rgba(236,72,153,0.08), transparent 55%); }
+        .content-container { max-width: 760px; margin: 32px auto; padding: 48px 48px 64px; line-height: 1.9; font-size: 1.06em; color: #1f2933; background: rgba(255,255,255,0.96); border-radius: 18px; box-shadow: 0 18px 45px rgba(15,23,42,0.15); }
+        body.theme-dark #main { background: radial-gradient(circle at top left, rgba(59,130,246,0.22), transparent 55%), radial-gradient(circle at bottom right, rgba(236,72,153,0.20), transparent 55%); }
+        body.theme-dark .content-container { background: rgba(15,23,42,0.96); color: #e5e7eb; box-shadow: 0 20px 50px rgba(0,0,0,0.65); }
 
         /* Content Styling (Basic normalization for the book HTML) */
-        .book-content img { max-width: 100%; height: auto; display: block; margin: 20px auto; }
-        .book-content h1, .book-content h2, .book-content h3 { font-family: -apple-system, sans-serif; margin-top: 1.5em; color: #333; }
-        .book-content p { margin-bottom: 1.5em; text-align: justify; }
+        .book-content img { max-width: 100%; height: auto; display: block; margin: 24px auto; border-radius: 8px; box-shadow: 0 8px 20px rgba(15,23,42,0.25); }
+        .book-content h1, .book-content h2, .book-content h3 { font-family: -apple-system, sans-serif; margin-top: 1.7em; margin-bottom: 0.6em; color: #111827; letter-spacing: 0.01em; }
+        .book-content p { margin-bottom: 1.35em; text-align: justify; text-justify: inter-word; }
+        .book-content pre { margin: 24px 0; padding: 14px 16px; border-radius: 10px; max-width: 100%; box-sizing: border-box; overflow-x: auto; white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.9em; line-height: 1.35; border: 1px solid rgba(15,23,42,0.55); }
+        .book-content :not(pre) > code { padding: 0.1em 0.3em; border-radius: 4px; background: rgba(15,23,42,0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.88em; }
+        .book-content pre code { background: transparent; padding: 0; border: none; white-space: pre; }
+        .book-content pre.code-block { position: relative; padding-top: 32px; }
+        .book-content pre .code-toolbar { position: absolute; top: 6px; right: 10px; display: flex; gap: 6px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 0.72rem; }
+        .book-content pre .code-wrap-toggle { border-radius: 999px; border: 1px solid rgba(148,163,184,0.8); background: rgba(255,255,255,0.85); color: #111827; padding: 3px 10px; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s; }
+        .book-content pre .code-wrap-toggle:hover { background: #0f172a; color: #f9fafb; border-color: #0f172a; transform: translateY(-1px); }
+        .book-content pre .code-line { display: flex; align-items: flex-start; }
+        .book-content pre .code-lineno { width: 3em; flex-shrink: 0; text-align: right; padding-right: 0.9em; opacity: 0.6; user-select: none; color: inherit; }
+        .book-content pre .code-text { flex: 1; white-space: pre; }
+        .book-content pre.code-wrap-on .code-text { white-space: pre-wrap; word-wrap: break-word; }
+        body.theme-dark .book-content h1, body.theme-dark .book-content h2, body.theme-dark .book-content h3 { color: #e5e7eb; }
+        body.theme-dark .book-content img { box-shadow: 0 10px 26px rgba(0,0,0,0.7); }
+        body.theme-light .book-content pre { background: #f9fafb; color: #111827; border-color: #e5e7eb; box-shadow: 0 10px 20px rgba(15,23,42,0.25); }
+        body.theme-dark .book-content pre { background: #020617; color: #e5e7eb; border-color: #4b5563; box-shadow: 0 18px 40px rgba(0,0,0,0.85); }
+        body.theme-dark .book-content :not(pre) > code { background: rgba(15,23,42,0.85); color: #e5e7eb; }
 
         /* Navigation Footer */
-        .chapter-nav { display: flex; justify-content: space-between; margin-top: 60px; padding-top: 20px; border-top: 1px solid #eee; font-family: -apple-system, sans-serif; }
-        .nav-btn { text-decoration: none; color: #3498db; font-weight: bold; padding: 10px 20px; border: 1px solid #3498db; border-radius: 4px; transition: all 0.2s; }
-        .nav-btn:hover { background: #3498db; color: white; }
-        .nav-btn.disabled { opacity: 0.5; pointer-events: none; border-color: #ccc; color: #ccc; }
+        .chapter-nav { display: flex; justify-content: space-between; margin-top: 60px; padding-top: 20px; border-top: 1px solid #e5e7eb; font-family: -apple-system, sans-serif; align-items: center; }
+        .nav-btn { text-decoration: none; color: #2563eb; font-weight: 600; padding: 10px 22px; border: 1px solid #2563eb; border-radius: 999px; transition: all 0.2s; background: #eff6ff; }
+        .nav-btn:hover { background: #2563eb; color: white; box-shadow: 0 10px 20px rgba(37,99,235,0.4); transform: translateY(-1px); }
+        .nav-btn.disabled { opacity: 0.4; pointer-events: none; border-color: #cbd5f5; color: #9ca3af; background: #f3f4f6; box-shadow: none; }
+        body.theme-dark .chapter-nav { border-top-color: #374151; }
+        body.theme-dark .nav-btn { background: rgba(15,23,42,0.9); border-color: #60a5fa; color: #e5e7eb; }
+        body.theme-dark .nav-btn:hover { background: #60a5fa; color: #020617; box-shadow: 0 10px 24px rgba(37,99,235,0.7); }
+        body.theme-dark .nav-btn.disabled { background: #111827; border-color: #4b5563; color: #6b7280; }
 
     </style>
 </head>
-<body>
+<body class="theme-light">
 
     <!-- SIDEBAR -->
     <div id="sidebar">
         <a href="/" class="nav-home">← Back to Library</a>
-        <div class="nav-header">{{ book.metadata.title }}</div>
+        <div class="nav-header-row">
+            <div class="nav-header">{{ book.metadata.title }}</div>
+            <button id="theme-toggle" type="button" class="theme-toggle-btn" onclick="toggleTheme()">深色模式</button>
+        </div>
 
         <!-- Recursive Macro for TOC -->
         {% macro render_toc(items) %}
@@ -155,6 +195,107 @@
             } catch (e) {
                 console.debug("Failed to persist sidebar scroll:", e);
             }
+        });
+
+        const THEME_KEY = "reader3_theme";
+
+        function applyTheme(theme) {
+            const bodyEl = document.body;
+            if (!bodyEl) return;
+            const next = theme === "dark" ? "theme-dark" : "theme-light";
+            bodyEl.classList.remove("theme-light", "theme-dark");
+            bodyEl.classList.add(next);
+            const btn = document.getElementById("theme-toggle");
+            if (btn) {
+                btn.textContent = next === "theme-dark" ? "浅色模式" : "深色模式";
+            }
+        }
+
+        function initTheme() {
+            let theme = "light";
+            try {
+                const stored = localStorage.getItem(THEME_KEY);
+                if (stored === "light" || stored === "dark") {
+                    theme = stored;
+                } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+                    theme = "dark";
+                }
+            } catch (e) {
+            }
+            applyTheme(theme);
+        }
+
+        function toggleTheme() {
+            let next = "light";
+            if (document.body && document.body.classList.contains("theme-light")) {
+                next = "dark";
+            }
+            applyTheme(next);
+            try {
+                localStorage.setItem(THEME_KEY, next);
+            } catch (e) {
+            }
+        }
+
+        function enhanceCodeBlocks() {
+            const blocks = document.querySelectorAll(".book-content pre");
+            const escapeHtml = (str) => {
+                return str
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;");
+            };
+
+            blocks.forEach((pre) => {
+                if (pre.dataset.enhanced === "1") {
+                    return;
+                }
+                pre.dataset.enhanced = "1";
+                pre.classList.add("code-block", "code-wrap-off");
+
+                let code = pre.querySelector("code");
+                let rawText = code ? code.textContent : pre.textContent || "";
+                if (rawText.endsWith("\n")) {
+                    rawText = rawText.slice(0, -1);
+                }
+                const lines = rawText.split("\n");
+
+                const numbered = lines.map((line, idx) => {
+                    const safe = escapeHtml(line === "" ? " " : line);
+                    const ln = idx + 1;
+                    return "<span class=\"code-line\">" +
+                        "<span class=\"code-lineno\">" + ln + "</span>" +
+                        "<span class=\"code-text\">" + safe + "</span>" +
+                        "</span>";
+                }).join("\n");
+
+                if (!code) {
+                    pre.innerHTML = "<code>" + numbered + "</code>";
+                    code = pre.querySelector("code");
+                } else {
+                    code.innerHTML = numbered;
+                }
+
+                const toolbar = document.createElement("div");
+                toolbar.className = "code-toolbar";
+                const wrapBtn = document.createElement("button");
+                wrapBtn.type = "button";
+                wrapBtn.className = "code-wrap-toggle";
+                wrapBtn.textContent = "开启换行";
+                wrapBtn.addEventListener("click", () => {
+                    const wrapOn = !pre.classList.contains("code-wrap-on");
+                    pre.classList.toggle("code-wrap-on", wrapOn);
+                    pre.classList.toggle("code-wrap-off", !wrapOn);
+                    wrapBtn.textContent = wrapOn ? "关闭换行" : "开启换行";
+                });
+                toolbar.appendChild(wrapBtn);
+                pre.insertBefore(toolbar, pre.firstChild);
+            });
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+            initTheme();
+            enhanceCodeBlocks();
         });
 
         // Helper to map TOC filenames to Spine Indices

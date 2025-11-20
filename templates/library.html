@@ -39,6 +39,16 @@
             </div>
         </div>
 
+        <div style="margin: 20px 0; padding: 16px; background: #ffffff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+            <div style="font-weight: 600; margin-bottom: 8px;">添加 Markdown 文档</div>
+            <div style="font-size: 0.9em; color: #555; margin-bottom: 8px;">选择 Markdown (.md) 文件上传后即可在网页中阅读。</div>
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <input id="upload-md-file" type="file" accept=".md,.markdown" />
+                <button type="button" class="btn" onclick="uploadMarkdown()">上传 Markdown</button>
+                <span id="upload-md-status" style="font-size: 0.85em; color: #666;"></span>
+            </div>
+        </div>
+
         {% if not books %}
             <p>No processed books found. Use the uploader above or run <code>reader3.py</code> on an epub first.</p>
         {% endif %}
@@ -132,6 +142,40 @@
                 }
                 const data = await res.json();
                 statusEl.textContent = "完成：" + (data.title || "书籍") + " 已加入书库";
+                statusEl.style.color = "#166534";
+                window.location.reload();
+            } catch (e) {
+                statusEl.textContent = "上传失败：" + e.message;
+                statusEl.style.color = "#b91c1c";
+            }
+        }
+
+        async function uploadMarkdown() {
+            const fileInput = document.getElementById("upload-md-file");
+            const statusEl = document.getElementById("upload-md-status");
+
+            if (!fileInput.files || !fileInput.files[0]) {
+                statusEl.textContent = "请选择一个 Markdown 文件";
+                statusEl.style.color = "#b91c1c";
+                return;
+            }
+
+            statusEl.textContent = "正在上传并解析 Markdown……";
+            statusEl.style.color = "#374151";
+
+            const formData = new FormData();
+            formData.append("file", fileInput.files[0]);
+
+            try {
+                const res = await fetch("/api/upload_md", {
+                    method: "POST",
+                    body: formData,
+                });
+                if (!res.ok) {
+                    throw new Error("HTTP " + res.status);
+                }
+                const data = await res.json();
+                statusEl.textContent = "完成：" + (data.title || "文档") + " 已加入书库";
                 statusEl.style.color = "#166534";
                 window.location.reload();
             } catch (e) {

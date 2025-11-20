@@ -13,7 +13,8 @@ from urllib.parse import unquote
 
 import ebooklib
 from ebooklib import epub
-from bs4 import BeautifulSoup, Comment
+from bs4 import BeautifulSoup, Comment, Tag
+import markdown as md_lib
 
 # --- Data structures ---
 
@@ -470,6 +471,214 @@ def process_epub(epub_path: str, output_dir: str, split_level: Optional[int] = N
         processed_at=datetime.now().isoformat(),
         anchor_map=anchor_map,
         split_level=split_level,
+    )
+
+    return final_book
+
+
+def process_markdown(md_path: str, output_dir: str) -> Book:
+    print(f"Loading markdown {md_path}...")
+    with open(md_path, "r", encoding="utf-8") as f:
+        md_text = f.read()
+
+    title: Optional[str] = None
+    for line in md_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            title = stripped.lstrip("#").strip() or None
+            if title:
+                break
+
+    if not title:
+        title = os.path.splitext(os.path.basename(md_path))[0] or "Untitled"
+
+    metadata = BookMetadata(
+        title=title,
+        language="en",
+        authors=[],
+        description=None,
+        publisher=None,
+        date=None,
+        identifiers=[],
+        subjects=[],
+    )
+
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    html = md_lib.markdown(
+        md_text,
+        extensions=[
+            "fenced_code",
+            "tables",
+            "toc",
+            "attr_list",
+        ],
+    )
+
+    soup = BeautifulSoup(html, "html.parser")
+    soup = clean_html_content(soup)
+
+    body = soup.body if soup.body is not None else soup
+
+    segments_html: List[str] = []
+    segment_titles: List[Optional[str]] = []
+    segment_anchors: List[Optional[str]] = []
+    segment_levels: List[Optional[int]] = []
+
+    current_nodes: List[Any] = []
+    current_title: Optional[str] = None
+    current_anchor: Optional[str] = None
+    current_level: Optional[int] = None
+    used_ids: Dict[str, bool] = {}
+
+    def flush_segment() -> None:
+        nonlocal current_nodes, current_title, current_anchor, current_level
+        if not current_nodes:
+            current_nodes = []
+            return
+        html_seg = "".join(str(n) for n in current_nodes)
+        segments_html.append(html_seg)
+        segment_titles.append(current_title)
+        segment_anchors.append(current_anchor)
+        segment_levels.append(current_level)
+        current_nodes = []
+        current_title = None
+        current_anchor = None
+        current_level = None
+
+    for node in body.children:
+        if isinstance(node, str):
+            if not node.strip() and not current_nodes:
+                continue
+            current_nodes.append(node)
+            continue
+        if isinstance(node, Comment):
+            continue
+        if isinstance(node, Tag) and node.name in ("h1", "h2", "h3"):
+            flush_segment()
+            heading_text = node.get_text(separator=" ", strip=True) or None
+            if heading_text is None:
+                continue
+            anchor = node.get("id")
+            if not anchor:
+                base = re.sub(r"[^a-zA-Z0-9]+", "-", heading_text).strip("-").lower() or "section"
+                anchor = base
+                counter = 2
+                while anchor in used_ids:
+                    anchor = f"{base}-{counter}"
+                    counter += 1
+                node["id"] = anchor
+            used_ids[anchor] = True
+            current_title = heading_text
+            current_anchor = anchor
+            try:
+                current_level = int(node.name[1])
+            except Exception:
+                current_level = None
+            current_nodes.append(node)
+        else:
+            current_nodes.append(node)
+
+    flush_segment()
+
+    file_name = "index.html"
+
+    if not segments_html:
+        full_html = str(body)
+        chapter_id = "markdown_0"
+        section_soup = BeautifulSoup(full_html, "html.parser")
+        text = extract_plain_text(section_soup)
+        spine_chapters: List[ChapterContent] = [
+            ChapterContent(
+                id=chapter_id,
+                href=file_name,
+                title=title,
+                content=full_html,
+                text=text,
+                order=0,
+            )
+        ]
+        anchor_map: Dict[str, int] = {}
+        register_anchors_from_soup(section_soup, file_name, 0, anchor_map)
+        base = os.path.basename(file_name)
+        if file_name not in anchor_map:
+            anchor_map[file_name] = 0
+        if base not in anchor_map:
+            anchor_map[base] = 0
+        toc_entries: List[TOCEntry] = [
+            TOCEntry(
+                title=title,
+                href=file_name,
+                file_href=file_name,
+                anchor="",
+                depth=0,
+            )
+        ]
+    else:
+        spine_chapters = []
+        anchor_map = {}
+        for idx, html_seg in enumerate(segments_html):
+            seg_html = html_seg
+            section_soup = BeautifulSoup(seg_html, "html.parser")
+            seg_title = segment_titles[idx] or f"Section {idx + 1}"
+            text = extract_plain_text(section_soup)
+            chapter = ChapterContent(
+                id=f"markdown_{idx}",
+                href=file_name,
+                title=seg_title,
+                content=seg_html,
+                text=text,
+                order=idx,
+            )
+            spine_chapters.append(chapter)
+            register_anchors_from_soup(section_soup, file_name, idx, anchor_map)
+            fname = file_name
+            base = os.path.basename(fname)
+            if fname not in anchor_map:
+                anchor_map[fname] = idx
+            if base not in anchor_map:
+                anchor_map[base] = idx
+
+        toc_entries: List[TOCEntry] = []
+        stack: List[Any] = []
+        for idx in range(len(segments_html)):
+            seg_title = segment_titles[idx] or f"Section {idx + 1}"
+            anchor = segment_anchors[idx]
+            level = segment_levels[idx] or 2
+            href = file_name
+            if anchor:
+                href = f"{file_name}#{anchor}"
+            entry = TOCEntry(
+                title=seg_title,
+                href=href,
+                file_href=file_name,
+                anchor=anchor or "",
+                depth=0,
+            )
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            if not stack:
+                entry.depth = 0
+                toc_entries.append(entry)
+            else:
+                parent_level, parent_entry = stack[-1]
+                entry.depth = parent_entry.depth + 1
+                parent_entry.children.append(entry)
+            stack.append((level, entry))
+
+    attach_chapter_indices_to_toc(toc_entries, anchor_map, max_depth=None)
+
+    final_book = Book(
+        metadata=metadata,
+        spine=spine_chapters,
+        toc=toc_entries,
+        images={},
+        source_file=os.path.basename(md_path),
+        processed_at=datetime.now().isoformat(),
+        anchor_map=anchor_map,
+        split_level=1,
     )
 
     return final_book
